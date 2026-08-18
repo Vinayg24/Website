@@ -1,40 +1,18 @@
-import fs from 'fs'
-import path from 'path'
+import { createClient } from '@supabase/supabase-js'
 import { IEnquiry, generateEnquiryId } from '../models/Enquiry'
 
-const DATA_DIR = path.join(process.cwd(), 'backend', 'data')
-const FILE_PATH = path.join(DATA_DIR, 'enquiries.json')
+const supabaseUrl = process.env.SUPABASE_URL || ''
+const supabaseKey = process.env.SUPABASE_SERVICE_KEY || ''
 
-// Ensure data directory exists
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true })
+if (!supabaseUrl || !supabaseKey) {
+  console.warn('[Supabase] SUPABASE_URL or SUPABASE_SERVICE_KEY is not set. Enquiry storage will fail.')
 }
 
-// Ensure JSON data file exists
-if (!fs.existsSync(FILE_PATH)) {
-  fs.writeFileSync(FILE_PATH, JSON.stringify([], null, 2), 'utf-8')
-}
+const supabase = createClient(supabaseUrl, supabaseKey)
 
-// In-memory cache synced with disk
-let enquiriesMemoryStore: IEnquiry[] = []
-
-try {
-  const fileContent = fs.readFileSync(FILE_PATH, 'utf-8')
-  enquiriesMemoryStore = JSON.parse(fileContent || '[]')
-} catch (err) {
-  console.error('Failed to read enquiries.json, initializing empty store:', err)
-  enquiriesMemoryStore = []
-}
-
-async function persistToDisk(): Promise<void> {
-  try {
-    await fs.promises.writeFile(FILE_PATH, JSON.stringify(enquiriesMemoryStore, null, 2), 'utf-8')
-  } catch (err) {
-    console.error('Failed to write to enquiries.json:', err)
-  }
-}
-
-export async function saveEnquiry(data: Omit<IEnquiry, 'id' | 'enquiryId' | 'createdAt' | 'status' | 'source'>): Promise<IEnquiry> {
+export async function saveEnquiry(
+  data: Omit<IEnquiry, 'id' | 'enquiryId' | 'createdAt' | 'status' | 'source'>
+): Promise<IEnquiry> {
   const enquiry: IEnquiry = {
     id: `enq_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
     enquiryId: generateEnquiryId(),
@@ -44,15 +22,83 @@ export async function saveEnquiry(data: Omit<IEnquiry, 'id' | 'enquiryId' | 'cre
     source: 'Website',
   }
 
-  enquiriesMemoryStore.unshift(enquiry)
-  await persistToDisk()
+  const { error } = await supabase.from('enquiries').insert({
+    id: enquiry.id,
+    enquiry_id: enquiry.enquiryId,
+    name: enquiry.name,
+    phone: enquiry.phone,
+    email: enquiry.email,
+    service: enquiry.service,
+    date: enquiry.date,
+    location: enquiry.location,
+    message: enquiry.message,
+    created_at: enquiry.createdAt,
+    status: enquiry.status,
+    source: enquiry.source,
+    ip_address: enquiry.ipAddress,
+    user_agent: enquiry.userAgent,
+  })
+
+  if (error) {
+    console.error('[Supabase] Insert error:', error.message)
+    throw new Error('Failed to save enquiry to database')
+  }
+
   return enquiry
 }
 
 export async function getAllEnquiries(): Promise<IEnquiry[]> {
-  return enquiriesMemoryStore
+  const { data, error } = await supabase
+    .from('enquiries')
+    .select('*')
+    .order('created_at', { ascending: false })
+
+  if (error) {
+    console.error('[Supabase] Select error:', error.message)
+    return []
+  }
+
+  return (data || []).map((row) => ({
+    id: row.id,
+    enquiryId: row.enquiry_id,
+    name: row.name,
+    phone: row.phone,
+    email: row.email,
+    service: row.service,
+    date: row.date,
+    location: row.location,
+    message: row.message,
+    createdAt: row.created_at,
+    status: row.status,
+    source: row.source,
+    ipAddress: row.ip_address,
+    userAgent: row.user_agent,
+  }))
 }
 
 export async function getEnquiryById(enquiryId: string): Promise<IEnquiry | undefined> {
-  return enquiriesMemoryStore.find(e => e.enquiryId === enquiryId || e.id === enquiryId)
+  const { data, error } = await supabase
+    .from('enquiries')
+    .select('*')
+    .or(`enquiry_id.eq.${enquiryId},id.eq.${enquiryId}`)
+    .maybeSingle()
+
+  if (error || !data) return undefined
+
+  return {
+    id: data.id,
+    enquiryId: data.enquiry_id,
+    name: data.name,
+    phone: data.phone,
+    email: data.email,
+    service: data.service,
+    date: data.date,
+    location: data.location,
+    message: data.message,
+    createdAt: data.created_at,
+    status: data.status,
+    source: data.source,
+    ipAddress: data.ip_address,
+    userAgent: data.user_agent,
+  }
 }
